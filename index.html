@@ -6,39 +6,173 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#0b1324" />
   <link rel="manifest" href="manifest.webmanifest" />
+  <style>
+    body { background:#0f172a; color:#e5e7eb; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; margin:0; padding:20px; }
+    .wrap { max-width:980px; margin:0 auto; }
+    h1 { margin:0 0 14px; font-size:1.25rem; }
+    .card { background:#111827; border:1px solid #1f2937; border-radius:12px; padding:16px; margin-bottom:18px; }
+    label { display:block; margin:8px 0 4px; color:#9ca3af; }
+    input,textarea { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #374151; background:#0b1220; color:#e5e7eb; box-sizing:border-box; }
+    textarea { min-height:92px; resize:vertical; }
+    canvas { width:100%; height:220px; background:#fff; border:1px solid #cbd5e1; border-radius:10px; touch-action:none; }
+    button { margin:8px 8px 0 0; padding:10px 14px; border-radius:10px; border:1px solid #334155; background:#0b1324; color:#e5e7eb; cursor:pointer; }
+    button.primary { background:#073042; border-color:#155e75; }
+    .hint { color:#9ca3af; font-size:.9rem; margin-top:6px; }
+  </style>
 </head>
 <body>
-<h1>GDPR Consent Form</h1>
-<form>
-  <label>First name <input id="firstName"></label><br/>
-  <label>Last name <input id="lastName"></label><br/>
-  <label>Email <input id="email"></label><br/>
-  <label>Notes <textarea id="notes"></textarea></label><br/>
-</form>
-<p id="gdprText">I hereby acknowledge that I have read and understood the Privacy Notice...</p>
-<canvas id="sig" width="400" height="150" style="border:1px solid #ccc;background:#fff;"></canvas><br/>
-<button id="undoBtn">Undo</button><button id="clearBtn">Clear</button><br/>
-<button id="pickFolderBtn">Choose Save Folder</button>
-<button id="saveBtn">Complete & Save PDF</button>
-<div id="status"></div>
+<div class="wrap">
+  <h1>GDPR Consent – On-Device Capture</h1>
 
+  <div class="card">
+    <label for="firstName">First name</label><input id="firstName" autocomplete="off" />
+    <label for="lastName">Last name</label><input id="lastName" autocomplete="off" />
+    <label for="email">Email</label><input id="email" inputmode="email" />
+    <label for="notes">Notes (optional)</label><textarea id="notes"></textarea>
+    <label>Consent text (fixed)</label>
+    <div id="gdprText" style="padding:10px;background:#0b1220;border:1px dashed #334155;border-radius:8px;">
+      I hereby acknowledge that I have read and understood the Privacy Notice and consent to the processing of my personal data for the purposes described therein. I understand I can withdraw consent at any time as described in the notice.
+    </div>
+  </div>
+
+  <div class="card">
+    <label>Signature</label>
+    <canvas id="sig" width="1200" height="500"></canvas><br/>
+    <button id="undoBtn">Undo</button>
+    <button id="clearBtn">Clear</button>
+    <br/>
+    <button id="pickFolderBtn">Choose Save Folder (Chrome/Android)</button>
+    <button class="primary" id="saveBtn">Complete & Save PDF</button>
+    <div id="status" class="hint">Ready.</div>
+    <div class="hint">On iOS (Safari/Firefox), the PDF will open in a new tab — tap Share → “Save to Files”.</div>
+  </div>
+</div>
+
+<!-- deps -->
 <script src="https://cdn.jsdelivr.net/npm/signature_pad@5.0.3/dist/signature_pad.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+
 <script>
-if('serviceWorker' in navigator){navigator.serviceWorker.register('./service-worker.js');}
-const pad=new window.SignaturePad(document.getElementById('sig'));
-document.getElementById('undoBtn').onclick=()=>{const d=pad.toData();if(d.length){d.pop();pad.fromData(d);}};
-document.getElementById('clearBtn').onclick=()=>pad.clear();
-let folderHandle=null;
-document.getElementById('pickFolderBtn').onclick=async()=>{try{folderHandle=await window.showDirectoryPicker();document.getElementById('status').textContent='Folder selected.';}catch{}};
-function buildPdfBlob(data){const{jsPDF}=window.jspdf;const doc=new jsPDF();doc.text(`First: ${data.first}`,10,20);doc.text(`Last: ${data.last}`,10,30);doc.text(`Email: ${data.email}`,10,40);doc.text('Consent:',10,60);doc.text(data.consent,10,70,{maxWidth:180});doc.addImage(data.sig,'PNG',10,100,100,40);return doc.output('blob');}
-document.getElementById('saveBtn').onclick=async()=>{
- if(pad.isEmpty()){document.getElementById('status').textContent='Signature required';return;}
- const sig=await (await fetch(pad.toDataURL())).arrayBuffer();
- const blob=buildPdfBlob({first:document.getElementById('firstName').value,last:document.getElementById('lastName').value,email:document.getElementById('email').value,consent:document.getElementById('gdprText').textContent,sig:new Uint8Array(sig)});
- const fname=`GDPR_${Date.now()}.pdf`;
- try{if(folderHandle){const f=await folderHandle.getFileHandle(fname,{create:true});const w=await f.createWritable();await w.write(blob);await w.close();document.getElementById('status').textContent='Saved to folder.';return;}}catch{}
- const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=fname;a.click();URL.revokeObjectURL(url);document.getElementById('status').textContent='Downloaded.';
+// PWA SW
+if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./service-worker.js'); }
+
+// Helpers
+const $ = (id)=>document.getElementById(id);
+const fmt2 = (n)=>String(n).padStart(2,'0');
+const ts = ()=>{ const d=new Date(); return `${d.getFullYear()}${fmt2(d.getMonth()+1)}${fmt2(d.getDate())}_${fmt2(d.getHours())}${fmt2(d.getMinutes())}${fmt2(d.getSeconds())}`; };
+const sanitize = (s)=>(s||'').trim().replace(/[^A-Za-z0-9 _.-]/g,'_');
+function isIOS(){
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+// Signature pad (HiDPI-aware)
+const canvas = $('sig');
+const pad = new window.SignaturePad(canvas, { minWidth:0.8, maxWidth:2.0, throttle:0 });
+function resizeCanvas(){
+  const ratio = Math.max(window.devicePixelRatio||1,1);
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = Math.floor(w*ratio); canvas.height = Math.floor(h*ratio);
+  canvas.getContext('2d').scale(ratio, ratio);
+  pad.clear();
+}
+addEventListener('resize', resizeCanvas); resizeCanvas();
+
+$('undoBtn').onclick = ()=>{ const d=pad.toData(); if(d.length){ d.pop(); pad.fromData(d); } };
+$('clearBtn').onclick = ()=> pad.clear();
+
+// Folder access (Chrome/Android)
+window.folderHandle = null;
+$('pickFolderBtn').disabled = !('showDirectoryPicker' in window);
+$('pickFolderBtn').onclick = async ()=>{
+  try {
+    window.folderHandle = await window.showDirectoryPicker();
+    $('status').textContent = 'Folder selected. PDFs will auto-save there.';
+  } catch {
+    $('status').textContent = 'Folder selection cancelled.';
+  }
+};
+async function saveBlobToFolder(blob, filename){
+  const fh = await window.folderHandle.getFileHandle(filename, { create:true });
+  const w = await fh.createWritable(); await w.write(blob); await w.close();
+}
+
+// PDF builder
+const { jsPDF } = window.jspdf;
+function buildPdfBlob({ firstName, lastName, email, notes, consentText, signaturePng }) {
+  const doc = new jsPDF({ unit:'pt', format:'a4' }); // 595x842
+  const left=56, right=539, line=16; let y=64;
+  const h1=(t)=>{ doc.setFont('helvetica','bold'); doc.setFontSize(18); doc.text(t,left,y); y+=24; };
+  const h2=(t)=>{ doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.text(t,left,y); y+=18; };
+  const p=(t,size=11)=>{ doc.setFont('helvetica','normal'); doc.setFontSize(size);
+    doc.splitTextToSize(t, right-left).forEach(ln=>{ doc.text(ln,left,y); y+=line; }); };
+  const kv=(k,v)=>{ doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.text(`${k}:`,left,y);
+    doc.setFont('helvetica','normal'); doc.text(`${v||'-'}`, left+110, y); y+=line; };
+
+  h1('GDPR Consent & Acknowledgement');
+  kv('First name', firstName); kv('Last name', lastName); kv('Email', email); kv('Timestamp', new Date().toLocaleString());
+  y+=6; h2('Consent statement'); p(consentText);
+  y+=8; h2('Notes'); p(notes || '-');
+  y+=14; h2('Signature'); const sigW=300, sigH=120; doc.setDrawColor(180); doc.rect(left,y,sigW,sigH);
+  if (signaturePng) { doc.addImage(signaturePng,'PNG', left+4, y+4, sigW-8, sigH-8); } y+=sigH+14;
+
+  doc.setFont('helvetica','normal'); doc.setFontSize(9);
+  doc.text('Generated locally on this device. Fields and signature are flattened.', left, 812);
+  return doc.output('blob');
+}
+
+// iOS-safe saver
+async function saveOrDownloadPDF(blob, filename){
+  // 1) Direct write (Chrome/Android with chosen folder)
+  if (window.folderHandle) {
+    try { await saveBlobToFolder(blob, filename); $('status').textContent = `Saved as ${filename} in chosen folder.`; return; }
+    catch(e){ /* fall through */ }
+  }
+
+  // 2) Web Share Level 2 (some iOS versions)
+  try {
+    const file = new File([blob], filename, { type:'application/pdf' });
+    if (navigator.canShare && navigator.canShare({ files:[file] })) {
+      await navigator.share({ files:[file], title: filename, text: 'GDPR PDF' });
+      $('status').textContent = 'Shared via system sheet.';
+      return;
+    }
+  } catch(_) {}
+
+  // 3) iOS viewer route (Firefox/Safari): new tab → user taps Share → Save to Files
+  if (isIOS()) {
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    $('status').textContent = 'Opened PDF in a new tab. Tap Share → “Save to Files”.';
+    setTimeout(()=>URL.revokeObjectURL(url), 60000);
+    return;
+  }
+
+  // 4) Default: programmatic download
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  $('status').textContent = `Downloaded ${filename}.`;
+}
+
+// Main action
+$('saveBtn').onclick = async ()=>{
+  if (pad.isEmpty()) { $('status').textContent = 'Please add a signature.'; return; }
+
+  const firstName = sanitize($('firstName').value);
+  const lastName  = sanitize($('lastName').value);
+  const email     = $('email').value.trim();
+  const notes     = $('notes').value.trim();
+  const consentText = $('gdprText').textContent.trim();
+
+  if (!firstName || !lastName || !email) { $('status').textContent = 'Fill First name, Last name, and Email.'; return; }
+
+  const sigPng = await (await fetch(pad.toDataURL('image/png'))).arrayBuffer();
+  const blob = buildPdfBlob({ firstName, lastName, email, notes, consentText, signaturePng:new Uint8Array(sigPng) });
+  const filename = `GDPR_${lastName}_${firstName}_${ts()}.pdf`;
+
+  await saveOrDownloadPDF(blob, filename);
 };
 </script>
 </body>
