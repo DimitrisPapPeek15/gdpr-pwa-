@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>GDPR Consent</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b1324" />
+  <link rel="manifest" href="manifest.webmanifest" />
+</head>
+<body>
+<h1>GDPR Consent Form</h1>
+<form>
+  <label>First name <input id="firstName"></label><br/>
+  <label>Last name <input id="lastName"></label><br/>
+  <label>Email <input id="email"></label><br/>
+  <label>Notes <textarea id="notes"></textarea></label><br/>
+</form>
+<p id="gdprText">I hereby acknowledge that I have read and understood the Privacy Notice...</p>
+<canvas id="sig" width="400" height="150" style="border:1px solid #ccc;background:#fff;"></canvas><br/>
+<button id="undoBtn">Undo</button><button id="clearBtn">Clear</button><br/>
+<button id="pickFolderBtn">Choose Save Folder</button>
+<button id="saveBtn">Complete & Save PDF</button>
+<div id="status"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/signature_pad@5.0.3/dist/signature_pad.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+<script>
+if('serviceWorker' in navigator){navigator.serviceWorker.register('./service-worker.js');}
+const pad=new window.SignaturePad(document.getElementById('sig'));
+document.getElementById('undoBtn').onclick=()=>{const d=pad.toData();if(d.length){d.pop();pad.fromData(d);}};
+document.getElementById('clearBtn').onclick=()=>pad.clear();
+let folderHandle=null;
+document.getElementById('pickFolderBtn').onclick=async()=>{try{folderHandle=await window.showDirectoryPicker();document.getElementById('status').textContent='Folder selected.';}catch{}};
+function buildPdfBlob(data){const{jsPDF}=window.jspdf;const doc=new jsPDF();doc.text(`First: ${data.first}`,10,20);doc.text(`Last: ${data.last}`,10,30);doc.text(`Email: ${data.email}`,10,40);doc.text('Consent:',10,60);doc.text(data.consent,10,70,{maxWidth:180});doc.addImage(data.sig,'PNG',10,100,100,40);return doc.output('blob');}
+document.getElementById('saveBtn').onclick=async()=>{
+ if(pad.isEmpty()){document.getElementById('status').textContent='Signature required';return;}
+ const sig=await (await fetch(pad.toDataURL())).arrayBuffer();
+ const blob=buildPdfBlob({first:document.getElementById('firstName').value,last:document.getElementById('lastName').value,email:document.getElementById('email').value,consent:document.getElementById('gdprText').textContent,sig:new Uint8Array(sig)});
+ const fname=`GDPR_${Date.now()}.pdf`;
+ try{if(folderHandle){const f=await folderHandle.getFileHandle(fname,{create:true});const w=await f.createWritable();await w.write(blob);await w.close();document.getElementById('status').textContent='Saved to folder.';return;}}catch{}
+ const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=fname;a.click();URL.revokeObjectURL(url);document.getElementById('status').textContent='Downloaded.';
+};
+</script>
+</body>
+</html>
